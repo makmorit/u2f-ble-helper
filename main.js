@@ -1,10 +1,10 @@
 //FIDO Bluetooth UUIDs
-var FIDO_U2F_SERVICE_UUID = "f1d0fff0-deaa-ecee-b42f-c9ba7ed623bb";
+var FIDO_U2F_SERVICE_UUID = "0000fffd-0000-1000-8000-00805f9b34fb";
 var U2F_CONTROL_POINT_ID  = "f1d0fff1-deaa-ecee-b42f-c9ba7ed623bb";
 var U2F_STATUS_ID  = "f1d0fff2-deaa-ecee-b42f-c9ba7ed623bb";
 var CHARACTERISTIC_UPDATE_NOTIFICATION_DESCRIPTOR_UUID = "00002902-0000-1000-8000-00805f9b34fb";
 
-var MAX_CHARACTERISTIC_LENGTH = 80;
+var MAX_CHARACTERISTIC_LENGTH = 64;
 var U2F_MESSAGE_TYPE = 0x83;
 
 var ENABLE_NOTIFICATIONS = new ArrayBuffer(2);
@@ -58,8 +58,7 @@ function init() {
   console.log("sending notification registration to FIDO U2F extension");
   chrome.runtime.sendMessage('pfboblefjcgdjicmnffhdgionmgcdmne', chrome.runtime.id);
 
-  document.querySelector('#greeting').innerText =
-    'Hello, World! It is ' + new Date();
+  console.log('Hello, World! It is ' + new Date());
 
   //if there are any connected authenticators find one
   chrome.bluetooth.getDevices(function(devices){
@@ -234,6 +233,10 @@ function initializeService(service){
     else{
       u2fService = service;
       chrome.bluetoothLowEnergy.getCharacteristics(u2fService.instanceId, function(characteristics){
+        if(characteristics === undefined){
+          console.log('u2f status characteristic is undefined: ' + chrome.runtime.lastError.message);
+          return;
+        }
         for(var i = 0; i < characteristics.length; i++){
           if(characteristics[i].uuid == U2F_STATUS_ID){
             u2fStatus = characteristics[i];
@@ -335,6 +338,3 @@ function sendSignRequest(request, sendResponse){
     sendMessageToAuthenticator(signMessage);
     helperResponse = sendResponse;
 }
-
-
-init();
