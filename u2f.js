@@ -1,5 +1,6 @@
 //U2F helper functions
 var U2F_HEADER_BYTES = 7;
+var U2F_FOOTER_BYTES = 2;
 var U2F_KEYHANDLE_BYTE_LENGTH = 1;
 
 
@@ -44,7 +45,7 @@ function createEnrollCommand(enrollInfo){
   var hashApp = B64_decode(enrollInfo.enrollChallenges[0].appIdHash);
   
   var lenU2F = hashChallenge.length + hashApp.length;
-  var lenData = lenU2F + U2F_HEADER_BYTES;
+  var lenData = lenU2F + U2F_HEADER_BYTES + U2F_FOOTER_BYTES;
   var msgLengthHi = (lenData & 0XFF00) >> 8;
   var msgLengthLow = (lenData & 0x00FF);
   
@@ -54,10 +55,12 @@ function createEnrollCommand(enrollInfo){
   
   //build up the message to send to the BLE U2F authenticator
   var apdu = new Uint8Array([U2F_BLE_MSG, msgLengthHi, msgLengthLow, 0x00, U2F_ENROLL_COMMAND, U2F_REQUIRE_PHYSICAL_PRESENCE, 0x00, 0x00, enrollLengthHi, enrollLengthLow]);
-  var u8 = new Uint8Array(apdu.length +  hashChallenge.length + hashApp.length);
+  var Le = new Uint8Array([0x00, 0x00]);
+  var u8 = new Uint8Array(apdu.length +  hashChallenge.length + hashApp.length + Le.length);
   u8.set(apdu);
   u8.set(hashChallenge, apdu.length);
-  u8.set(hashApp, apdu.length + hashChallenge.length);
+  u8.set(hashApp,       apdu.length + hashChallenge.length);
+  u8.set(Le,            apdu.length + hashChallenge.length + hashApp.length);
   return u8.buffer;
 }
 
@@ -82,28 +85,27 @@ function createSignCommand(signInfo){
   var hashApp = B64_decode(signInfo.signData[0].appIdHash);
   var hashHandle = B64_decode(signInfo.signData[0].keyHandle);
   
-  var lenU2F = hashChallenge.length + hashApp.length + hashHandle.length;
-  var lenData = lenU2F + U2F_HEADER_BYTES;
+  var lenU2F = hashChallenge.length + hashApp.length + U2F_KEYHANDLE_BYTE_LENGTH + hashHandle.length;
+  var lenData = lenU2F + U2F_HEADER_BYTES + U2F_FOOTER_BYTES;
   var msgLengthHi = (lenData & 0XFF00) >> 8;
   var msgLengthLow = (lenData & 0x00FF);
   
   //calculate the authentication message length
   var authLengthHi = (lenU2F & 0XFF00) >> 8;
   var authLengthLow = (lenU2F & 0x00FF);
-  
   var keyHandleLength = hashHandle.length;
   
   //build up the message to send to the BLE U2F authenticator
   var apdu = new Uint8Array([U2F_BLE_MSG, msgLengthHi, msgLengthLow, 0x00, U2F_AUTHENTICATE_COMMAND, U2F_REQUIRE_PHYSICAL_PRESENCE, 0x00, 0x00, authLengthHi, authLengthLow]);
-  var u8 = new Uint8Array(apdu.length +  hashChallenge.length + hashApp.length + U2F_KEYHANDLE_BYTE_LENGTH + hashHandle.length);
+  var Le = new Uint8Array([0x00, 0x00]);
+  var u8 = new Uint8Array(apdu.length +  hashChallenge.length + hashApp.length + U2F_KEYHANDLE_BYTE_LENGTH + hashHandle.length + Le.length);
   u8.set(apdu);
   u8.set(hashChallenge, apdu.length);
-  u8.set(hashApp, apdu.length + hashChallenge.length);
+  u8.set(hashApp,       apdu.length + hashChallenge.length);
   u8[apdu.length + hashChallenge.length + hashApp.length] = keyHandleLength;
-  u8.set(hashHandle, apdu.length + hashChallenge.length + hashApp.length + U2F_KEYHANDLE_BYTE_LENGTH);
+  u8.set(hashHandle,    apdu.length + hashChallenge.length + hashApp.length + U2F_KEYHANDLE_BYTE_LENGTH);
+  u8.set(Le,            apdu.length + hashChallenge.length + hashApp.length + U2F_KEYHANDLE_BYTE_LENGTH + hashHandle.length);
   return u8.buffer;
-  
-  
 }
 
  //takes a hex string and for each character this
