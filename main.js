@@ -29,7 +29,7 @@ var U2F_STATE = U2F_STATE_IDLE;
 var MESSAGE_STATE_WAITING_FOR_BITS = 0;
 var MESSAGE_STATE_IDLE = 1;
 var MESSAGE_STATE = MESSAGE_STATE_IDLE;
-var bitIndex = 0;
+var byteIndex = 0;
 var messageFromDevice;
 
 var helperResponse;
@@ -126,151 +126,170 @@ chrome.bluetooth.onDeviceAdded.addListener(
     });
 });
 
-var lastBytesRecieved = null;
+// メッセージ受信時の処理
 chrome.bluetoothLowEnergy.onCharacteristicValueChanged.addListener(function(characteristic){
-    //console.log("value changed on characteristic " + characteristic.instanceId);
-    if(characteristic.uuid != U2F_STATUS_ID || !characteristic.value){
+    if (characteristic.uuid != U2F_STATUS_ID || !characteristic.value) {
       return;
     }
-    console.log("U2F status characteristic changed");
-    var data_view = new Uint8Array(characteristic.value);
-    
-    if(lastBytesRecieved == unPackBinaryToHex(characteristic.value)){
-      console.log("received duplicate packet from authenticator - ignoring");
-      return;
-    }
-    lastBytesRecieved = unPackBinaryToHex(characteristic.value);
-    console.log('Current packet received from authenticator:' + lastBytesRecieved);
-    var msg_view;
-    if(MESSAGE_STATE == MESSAGE_STATE_IDLE && data_view[0] == U2F_MESSAGE_TYPE){
-      //first message that comes in from the status will contain the 
-      //length of the message - will use the size to allocate the 
-      //ArrayBuffer to populate with the entire message
-      var messageBits = data_view[1] << 8;
-      messageBits += (data_view[2] & 0xFF);
-      if(messageBits == 2){
-        console.log('Error from authenticator');
-        messageFromDevice = new ArrayBuffer(messageBits);
-        msg_view = new Uint8Array(messageFromDevice);
-        msg_view.set(data_view.subarray(3));
-        MESSAGE_STATE = MESSAGE_STATE_IDLE;
-        sendResponseToHelper();
-      }
-      else{
-        messageFromDevice = new ArrayBuffer(messageBits - 2); //remove the status word
-        msg_view= new Uint8Array(messageFromDevice);
-        msg_view.set(data_view.subarray(3));
-        
-        bitIndex = data_view.length - 3;
-        MESSAGE_STATE = MESSAGE_STATE_WAITING_FOR_BITS;
-        console.log("U2F message received: length " + messageBits + " next index = " + bitIndex);
-      }
-    }
-    else if(MESSAGE_STATE == MESSAGE_STATE_WAITING_FOR_BITS){
-      msg_view = new Uint8Array(messageFromDevice);
-      console.log("U2F message fragment length = " + data_view.length  + " index = " + bitIndex + " message length = " + msg_view.length);
-      //if((bitIndex + data_view.length - 2) == msg_view.length){
-      if(msg_view.length <  MAX_CHARACTERISTIC_LENGTH -1){
-        console.log("U2F message end - removing status word from message");
-        msg_view.set(data_view.subarray(0, data_view.length-2), bitIndex);
-        console.log("U2F message has been completely received");
-        MESSAGE_STATE = MESSAGE_STATE_IDLE;
-        sendResponseToHelper();
-      }
-      else{
-        msg_view.set(data_view, bitIndex);
-        bitIndex += data_view.length;
-      }
-    }
- });
- 
- function sendResponseToHelper(){
-   var data = unPackBinaryToHex(messageFromDevice);
-   console.log("message data as hex : " + data);
-   if(messageFromDevice.byteLength == 2){
-     U2F_STATE = U2F_STATE_IDLE;
-     console.log('going to process this error ' + data);
-     return;
-   }
-   if(U2F_STATE == U2F_STATE_ENROLL){
-     var b64 = B64_encode(new Uint8Array(messageFromDevice));
-     console.log("base64 websaft enroll data " + b64);
-     enroll_helper_reply.code = 0;
-     enroll_helper_reply.enrollData = b64;
-     console.log("sending enroll response back to chrome extension");
-     if(helperResponse){
-       helperResponse(enroll_helper_reply);
-       helperResponse = null;
-       messageFromDevice = null;
-       U2F_STATE = U2F_STATE_IDLE;
-     }
-   }
-   else if(U2F_STATE == U2F_STATE_SIGN){
-     console.log('implement sign');
-   }
-    
+    var characteristicValue = new Uint8Array(characteristic.value);
+    console.log('Received message from authenticator', unPackBinaryToHex(characteristic.value));
 
- }
- 
-function sha256HashOfString(string) {
-  var s = new SHA256();
-  s.update(UTIL_StringToBytes(string));
-  return s.digest();
+    var msg_view;
+    if (MESSAGE_STATE == MESSAGE_STATE_IDLE && characteristicValue[0] == U2F_MESSAGE_TYPE) {
+      // 分割受信１回目の場合
+      //   受信予定データ長分、バッファ領域を確保し、
+      //   今回受信データ(BLEヘッダー=先頭3バイトを削除)を
+      //   バッファに格納
+      var responseDataLength = characteristicValue[1] << 8;
+      responseDataLength += (characteristicValue[2] & 0xFF);
+      messageFromDevice = new ArrayBuffer(responseDataLength);
+      msg_view = new Uint8Array(messageFromDevice);
+      msg_view.set(characteristicValue.subarray(3));
+
+      if (responseDataLength == 2) {
+        // ステータスワード(2バイト)のみ受信した場合は、
+        // エラーで戻ってきたと判断し、
+        // ヘルパーにレスポンスを送信
+        console.log("Error message received", unPackBinaryToHex(messageFromDevice));
+        MESSAGE_STATE = MESSAGE_STATE_IDLE;
+        sendErrorResponseToHelper();
+
+      } else {
+        // 分割受信が継続すると判断し、インデックスを更新
+        byteIndex = characteristicValue.length - 3;
+        MESSAGE_STATE = MESSAGE_STATE_WAITING_FOR_BITS;
+      }
+
+    } else if (MESSAGE_STATE == MESSAGE_STATE_WAITING_FOR_BITS) {
+      // 分割受信２回目以降の場合
+      //   今回受信データ(BLEヘッダー=先頭1バイトを削除)を
+      //   バッファに格納
+      msg_view = new Uint8Array(messageFromDevice);
+      msg_view.set(characteristicValue.subarray(1), byteIndex);
+
+      var dataLength = characteristicValue.length - 1;
+      if (byteIndex + dataLength < msg_view.length) {
+        // 取得済みバイト数+今回受信データ長が
+        // 全体バイト数に達しないときは、
+        // 分割受信が継続すると判断し、インデックスを更新
+        byteIndex += dataLength;
+
+      } else {
+        // 分割受信の最後と判断し、ヘルパーにレスポンスを送信
+        console.log("U2F message received", unPackBinaryToHex(messageFromDevice));
+        MESSAGE_STATE = MESSAGE_STATE_IDLE;
+        sendResponseToHelper();
+      }
+    }
+});
+
+function sendErrorResponseToHelper() {
+  if (helperResponse) {
+    // ステータスワードを取得
+    var temp = new Uint8Array(messageFromDevice);
+    var statusWord = (temp[0] << 8) + (temp[1] & 0xFF);
+
+    // エラーレスポンスを送信
+    if (U2F_STATE == U2F_STATE_ENROLL) {
+      enroll_helper_reply.code = statusWord;
+      enroll_helper_reply.enrollData = null;
+      helperResponse(enroll_helper_reply);
+
+    } else if(U2F_STATE == U2F_STATE_SIGN){
+      sign_helper_reply.code = statusWord;
+      sign_helper_reply.responseData = null;
+      helperResponse(sign_helper_reply);
+    }
+    helperResponse = null;
+  }
+
+  messageFromDevice = null;
+  U2F_STATE = U2F_STATE_IDLE;
 }
 
-function UTIL_StringToBytes(s, bytes) {
-  bytes = bytes || new Array(s.length);
-  for (var i = 0; i < s.length; ++i)
-    bytes[i] = s.charCodeAt(i);
-  return bytes;
+function sendResponseToHelper(){
+  // 受信レスポンスからステータスワード(末尾2バイト)を削除後
+  // B64エンコード
+  var messageWithoutSW = messageFromDevice.slice(0, messageFromDevice.byteLength - 2);
+  var b64 = B64_encode(new Uint8Array(messageWithoutSW));
+
+  var replyData = undefined;
+  if (U2F_STATE == U2F_STATE_ENROLL) {
+    console.log("base64 websafe enroll data", b64);
+    enroll_helper_reply.enrollData = b64;
+    enroll_helper_reply.code = 0;
+    replyData = enroll_helper_reply;
+    console.log("sending enroll response back to chrome extension");
+
+  } else if (U2F_STATE == U2F_STATE_SIGN) {
+    console.log("base64 websafe sign data", b64);
+    sign_helper_reply.responseData.signatureData = b64;
+    sign_helper_reply.code = 0;
+    replyData = sign_helper_reply;
+    console.log("sending sign response back to chrome extension");
+  }
+
+  // レスポンスを送信
+  if (helperResponse) {
+    if (replyData !== undefined) {
+      helperResponse(replyData);
+    }
+    helperResponse = null;
+  }
+
+  messageFromDevice = null;
+  U2F_STATE = U2F_STATE_IDLE;
 }
 
 function initializeService(service){
-    if(service === null){
-      console.log("u2f service disconnect");
-      u2fService = null;
-    }
-    else{
-      u2fService = service;
-      chrome.bluetoothLowEnergy.getCharacteristics(u2fService.instanceId, function(characteristics){
-        if(characteristics === undefined){
-          console.log('u2f status characteristic is undefined: ' + chrome.runtime.lastError.message);
-          return;
-        }
-        for(var i = 0; i < characteristics.length; i++){
-          if(characteristics[i].uuid == U2F_STATUS_ID){
-            u2fStatus = characteristics[i];
-          }
-          else if(characteristics[i].uuid == U2F_CONTROL_POINT_ID){
-            u2fControl = characteristics[i];
-          }
-        }
-        if(u2fStatus !== null){
-         chrome.bluetoothLowEnergy.startCharacteristicNotifications(u2fStatus.instanceId, function(){
-              if(chrome.runtime.lastError){
-                console.log('failed to enable notifications for u2f status characteristic: ' + chrome.runtime.lastError.message);
-                return;
-              }
-              console.log("notifications set up on u2f status characteristic");
-            });
-        }
-      });
-    }
+  if (service === null) {
+    console.log("u2f service disconnect");
+    u2fService = null;
+    return;
   }
 
-  chrome.bluetoothLowEnergy.onServiceAdded.addListener(function(service) {
-    if (service.uuid == FIDO_U2F_SERVICE_UUID)
-      initializeService(service);
-  });
+  u2fService = service;
+  chrome.bluetoothLowEnergy.getCharacteristics(u2fService.instanceId, function(characteristics){
+    if (characteristics === undefined){
+      console.log('u2f status characteristic is undefined: ' + chrome.runtime.lastError.message);
+      return;
+    }
 
-  chrome.bluetoothLowEnergy.onServiceRemoved.addListener(function(service) {
-    if (service.uuid == FIDO_U2F_SERVICE_UUID)
-      initializeService(null);
+    for (var i = 0; i < characteristics.length; i++) {
+      if (characteristics[i].uuid == U2F_STATUS_ID) {
+        u2fStatus = characteristics[i];
+      } else if(characteristics[i].uuid == U2F_CONTROL_POINT_ID) {
+        u2fControl = characteristics[i];
+      }
+    }
+
+    if (u2fStatus !== null) {
+      chrome.bluetoothLowEnergy.startCharacteristicNotifications(u2fStatus.instanceId, function(){
+        if (chrome.runtime.lastError) {
+          console.log('failed to enable notifications for u2f status characteristic: ' + chrome.runtime.lastError.message);
+          return;
+        }
+        console.log("notifications set up on u2f status characteristic");
+      });
+    }
   });
+}
+
+chrome.bluetoothLowEnergy.onServiceAdded.addListener(function(service) {
+  if (service.uuid == FIDO_U2F_SERVICE_UUID) {
+    initializeService(service);
+  }
+});
+
+chrome.bluetoothLowEnergy.onServiceRemoved.addListener(function(service) {
+  if (service.uuid == FIDO_U2F_SERVICE_UUID) {
+    initializeService(null);
+  }
+});
 
 chrome.runtime.onMessageExternal.addListener(
   function(request, sender, sendResponse) {
-    console.log("got a message from the extenstion " + JSON.stringify(request));
+    console.log("got a message from the extenstion", JSON.stringify(request));
     if(request.type == HELPER_ENROLL_MSG_TYPE){
       sendEnrollRequest(request, sendResponse);
     }
@@ -285,42 +304,75 @@ chrome.runtime.onMessageExternal.addListener(
     return true;
 });
 
-
-
-function sendMessageToAuthenticator(message){
+// メッセージ送信時の処理
+function sendMessageToAuthenticator(message, sequence){
   if(!message || message.byteLength === 0){
     return;
   }
+
   var data_view =  new Uint8Array(message);
-  if(data_view.length < MAX_CHARACTERISTIC_LENGTH){
-    console.log("Writing message to U2F control chacteristic  - length = " + message.byteLength);
-    chrome.bluetoothLowEnergy.writeCharacteristicValue(u2fControl.instanceId, message, function(){
+  var data_view_max_length = undefined;
+  var messageSegment = undefined;
+  var messageTemp = undefined;
+
+  if (sequence == -1) {
+    data_view_max_length = MAX_CHARACTERISTIC_LENGTH;
+    if (data_view.length > data_view_max_length) {
+      // 分割１回目の場合で、データ長が64バイトをこえる場合は
+      // 64バイトだけを送信し、残りのデータを継続送信
+      messageSegment = message.slice(0, data_view_max_length);
+
+    } else {
+      // 分割１回目の場合で、データ長が64バイト以下の場合は
+      // そのまま送信して終了
+      messageSegment = new Uint8Array(message);
+    }
+
+  } else {
+    data_view_max_length = MAX_CHARACTERISTIC_LENGTH - 1
+    if (data_view.length > data_view_max_length) {
+      // 分割２回目以降の場合で、データ長が63バイトを超える場合、
+      // 63バイトだけを送信し、残りのデータを継続送信
+      messageTemp = message.slice(0, data_view_max_length);
+
+    } else {
+      // 分割２回目以降の場合で、データ長が63バイト以下の場合は
+      // そのまま送信して終了
+      messageTemp = new Uint8Array(message);
+    }
+
+    // 先頭にシーケンスを付加
+    var seq = new Uint8Array([sequence]);
+    var len = seq.length + messageTemp.length;
+    var u8 = new Uint8Array(len);
+    u8.set(seq);
+    u8.set(messageTemp, seq.length);
+    messageSegment = u8.buffer;
+  }
+
+  console.log("Writing message to authenticator", unPackBinaryToHex(messageSegment));
+
+  if (data_view.length > data_view_max_length) {
+    chrome.bluetoothLowEnergy.writeCharacteristicValue(u2fControl.instanceId, messageSegment, function() {
+      if (chrome.runtime.lastError) {
+        console.log('Failed to write message: ' + chrome.runtime.lastError.message);
+        return;
+      }
+      sendMessageToAuthenticator(message.slice(data_view_max_length), ++sequence);
+    });
+
+  } else {
+    chrome.bluetoothLowEnergy.writeCharacteristicValue(u2fControl.instanceId, messageSegment, function() {
       console.log('Complete message to authenticator has been sent!');
     });
   }
-  else{
-    console.log("Writing message to U2F control chacteristic  - length = " + message.byteLength);
-    var messageSegment = message.slice(0, MAX_CHARACTERISTIC_LENGTH - 1);
-    chrome.bluetoothLowEnergy.writeCharacteristicValue(u2fControl.instanceId, messageSegment, function(){
-      if(chrome.runtime.lastError){
-           console.log('Failed to write to characteristic: ' + chrome.runtime.lastError.message);
-           return;
-      }
-      sendMessageToAuthenticator(message.slice(MAX_CHARACTERISTIC_LENGTH - 1));
-    });
-  }
-}
-
-function continueMessageSend(message){
-  console.log("segment written to characteristic: continuing write with " + message.byteLength + " bytes left");
-  sendMessageToAuthenticator(message);
 }
 
 function sendEnrollRequest(request, sendResponse){
     console.log("sending enroll request");
     U2F_STATE = U2F_STATE_ENROLL;
     var enrollMessage = createEnrollCommand(request);
-    sendMessageToAuthenticator(enrollMessage);
+    sendMessageToAuthenticator(enrollMessage, -1);
     helperResponse = sendResponse;
 }
 
@@ -333,8 +385,8 @@ function sendSignRequest(request, sendResponse){
     U2F_STATE = U2F_STATE_SIGN;
     sign_helper_reply.responseData.appIdHash = request.signData[0].appIdHash;
     sign_helper_reply.responseData.challengeHash = request.signData[0].challengeHash;
-    sign_helper_reply.responseData.keyHandle =  request.signData[0].keyHandle;
+    sign_helper_reply.responseData.keyHandle = request.signData[0].keyHandle;
     var signMessage = createSignCommand(request);
-    sendMessageToAuthenticator(signMessage);
+    sendMessageToAuthenticator(signMessage, -1);
     helperResponse = sendResponse;
 }
