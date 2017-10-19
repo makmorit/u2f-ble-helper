@@ -79,8 +79,10 @@ function init() {
         authenticator = device;
         chrome.bluetoothLowEnergy.getServices(authenticator.address, function(services){
           for(var i = 0; i < services.length; i++){
+            console.log("BLE Service", services[i].uuid);
             if (services[i].uuid == FIDO_U2F_SERVICE_UUID){
                 initializeService(services[i]);
+                console.log("FIDO U2F service initialize start");
                 break;
             }
           }
@@ -267,9 +269,11 @@ function initializeService(service){
       chrome.bluetoothLowEnergy.startCharacteristicNotifications(u2fStatus.instanceId, function(){
         if (chrome.runtime.lastError) {
           console.log('failed to enable notifications for u2f status characteristic: ' + chrome.runtime.lastError.message);
+          console.log("FIDO U2F service initialize abend");
           return;
         }
         console.log("notifications set up on u2f status characteristic");
+        console.log("FIDO U2F service initialize end");
       });
     }
   });
