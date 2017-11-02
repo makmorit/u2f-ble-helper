@@ -324,7 +324,7 @@ function sendMessageToAuthenticator(message, sequence){
     if (data_view.length > data_view_max_length) {
       // 分割１回目の場合で、データ長が64バイトをこえる場合は
       // 64バイトだけを送信し、残りのデータを継続送信
-      messageSegment = message.slice(0, data_view_max_length);
+      messageSegment = new Uint8Array(message.slice(0, data_view_max_length));
 
     } else {
       // 分割１回目の場合で、データ長が64バイト以下の場合は
@@ -337,7 +337,7 @@ function sendMessageToAuthenticator(message, sequence){
     if (data_view.length > data_view_max_length) {
       // 分割２回目以降の場合で、データ長が63バイトを超える場合、
       // 63バイトだけを送信し、残りのデータを継続送信
-      messageTemp = message.slice(0, data_view_max_length);
+      messageTemp = new Uint8Array(message.slice(0, data_view_max_length));
 
     } else {
       // 分割２回目以降の場合で、データ長が63バイト以下の場合は
