@@ -1,3 +1,3 @@
 # u2f-ble-helper
 
-BLEヘルパーをChromeブラウザー向けに書き換えております。
+ChromeブラウザーのJavaScriptを使用し、BLEヘルパーをChromeブラウザー向けに修正したものになります。
